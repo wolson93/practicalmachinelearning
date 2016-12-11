@@ -1,0 +1,135 @@
+---
+title: "Practical Machine Learning Project"
+author: "Will Olson"
+date: "12/10/2016"
+output: html_document
+---
+##Loading Data
+
+First, I load the appropriate packages, and download/read in the training/testing data.
+
+```{r, results='hide', message=F,warning=F}
+library(caret); library(randomForest); library(rattle); library(lattice); library(ggplot2); library(gbm); library(survival); library(splines); library(parallel); library(plyr);
+```
+
+```{r, results='hide',message=F,warning=F}
+##Loading in data
+if (!file.exists("PML_Training.csv")){
+    download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile="PML_Training.csv", method="curl")}
+if (!file.exists("PML_Testing.csv")){
+    download.file(url="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile="PML_Testing.csv", method="curl")}
+training <- read.csv("PML_Training.csv")
+testing <- read.csv("PML_Testing.csv")
+```
+
+##Cleaning Data
+
+Now that the data is loaded in, I clean up the data by removing any variables containing NAs.  Admittedly, I cheated a little bit for the sake of the final "testing" set to be used for the quiz.  I narrowed down to only the variables in the testing set that do not contain NAs, and narrowed down to the same set of variables in the training set (plus the classe variable, which needs to be predicted for testing set).  Conveniently, the nearZeroVar() function confirms thats there are no remaining variables that should be thrown out.
+
+```{r}
+#Remove first 7 columns, which shouldn't have any bearing on "classe"
+testing <- testing[,-c(1:7)]
+#Remove any columns with NAs
+testing <- testing[, colSums(is.na(testing)) == 0]
+#Training columns should mirror remaining testing columns
+training <- training[, colnames(training) %in% c(colnames(testing),"classe")]
+#nearZeroVar() confirms remaining variables are useful in constructing prediction model
+nearZeroVar(training,saveMetrics=TRUE)
+```
+
+##Data Partitioning
+
+Next, I set the seed for reproducibility and create a data partition such that 75% of our data is used for training, and 25% is used for testing.
+
+```{r}
+set.seed(100)
+inTrain <- createDataPartition(training$classe,p=0.75,list=FALSE)
+train <- training[inTrain,]
+test <- training[-inTrain,]
+```
+
+##Model Creation & Selection
+
+I decide to try out 5 different training methods - each can be run by modifying the train() function and do not necessarily require the use of a separate function at all.  If none of these seemed very accurate, I'd likely broaden my search.
+
+1) gbm - Gradient Boosting
+
+2) lda - Linear Discriminant Analysis
+
+3) nb - Naive Bayes
+
+4) rf - Random Forest
+
+5) rpart - Classification and Regression Trees (CART)
+
+I also set the control such that 5-fold cross validation takes place with each method.  First, I train the algorithms based on the "train" data set, I then predict off the "test" data set, and evaluate the results using a confusion matrix for each method.  
+
+```{r, results='hide', message=F, warning=F}
+#Set control for k-fold cross validation with k=5 folds
+control <- trainControl(method="cv", number=5)
+#Perform each of 5 methods on training set
+fit_gbm <- train(classe~.,data=train,method="gbm",trControl=control)
+fit_lda <- train(classe~.,data=train,method="lda",trControl=control)
+fit_nb <- train(classe~.,data=train,method="nb",trControl=control)
+fit_rpart <- train(classe~.,data=train,method="rpart",trControl=control)
+fit_rf <- train(classe~.,data=train,method="rf",trControl=control,ntree=50)
+```
+```{r, results='hide',message=F,warning=F}
+#Predict using each method on testing set
+pred_gbm <- predict(fit_gbm,newdata=test)
+pred_lda <- predict(fit_lda,newdata=test)
+pred_nb <- predict(fit_nb,newdata=test)
+pred_rpart <- predict(fit_rpart,newdata=test)
+pred_rf <- predict(fit_rf,newdata=test)
+```
+```{r, results='hide', message=F,warning=F}
+#Create confusion matrix for each prediction method
+cm_gbm <- confusionMatrix(pred_gbm,test$classe)
+cm_lda <- confusionMatrix(pred_lda,test$classe)
+cm_nb <- confusionMatrix(pred_nb,test$classe)
+cm_rpart <- confusionMatrix(pred_rpart,test$classe)
+cm_rf <- confusionMatrix(pred_rf,test$classe)
+```
+
+Now that we have the info from each confusion matrix, I compare the accuracy of each method.
+
+```{r}
+#Compare accuracy of each method
+accuracy <- data.frame(ModelType=c("gbm","lda","nb","rpart","rf"), Accuracy=rbind(cm_gbm$overall[1],cm_lda$overall[1],cm_nb$overall[1],cm_rpart$overall[1],cm_rf$overall[1]))
+accuracy
+```
+
+As you can see, Naive Bayes, Linear Discriminant Analysis, and CART do not perform prediction very well based on their accuracy (see Appendix A for classification tree from CART).  All three are below 75% accuracy, and CART is even below 50%.
+
+However, the boosting and random forest methods perform much better, each predicting classe with more than 95% accuracy. However, the random forest method predicts classe with over 99% accuracy in the test set, so an out-of-sample error of less than 1%.  Therefore, I decide to use this method on the testing data set for the project quiz (it predicted 20/20 correct).  These results aren't too surprising since random forest and boosting methods are some of the most accurate/widely used prediction algorithms (see Appendix B-D for random forest exploratory analysis).
+
+I also want to note one quick thing - although the random forest method was most accurate of the 5 that I tested, it also took the longest time to run, and produced 50+ warning messages.  I'm not sure if I could reduce the value of ntrees to reduce the run time without sacrificing much accuracy, but it seems like you could get comparable accuracy by boosting (95% vs 99%) in much less time.  While I ended up using the random forest method on the testing data, this is worth consideration if time was an issue.
+
+##Appendix
+
+### A) Classification tree from CART method
+
+```{r}
+#Create plot for CART method
+fancyRpartPlot(fit_rpart$finalModel)
+```
+
+### B) Most Important Variables from Random Forest Method
+
+```{r}
+test$predRight <- pred_rf==test$classe
+varImp(fit_rf)
+```
+
+### C) Distribution of Classe in Test Set
+
+```{r}
+qplot(roll_belt,pitch_forearm,colour=classe,data=test,main="Distribution of Classe")
+```
+
+### D) Prediction Accuracy of Random Forest Method
+
+```{r}
+qplot(roll_belt,pitch_forearm,colour=predRight,data=test,main="Predictions")
+```
+
